@@ -719,12 +719,24 @@ const SITE_CONFIG = {
     // 投票締切の日時（ISO8601形式。末尾の +09:00 は日本時間の意味）
     deadline: "2026-10-25T20:00:00+09:00",
 
-    // true … 締切後に「当選確実」表示を行う / false … 行わない
+    // -------------------------------------------------------
+    // 【当選確実発表の設定】
+    // showCertainAnnouncement: true にすると、締切後に「当選確実」を発表。
+    // false にすると発表せず、カウントダウン後は「投票締切」のみ表示。
+    //
+    // certainCandidates: 当選確実にする候補者リスト（複数可）
+    //   name     … ELECTION_DATAの候補者名と完全一致させること
+    //   district … 画面に表示する選挙区名
+    //   ここに載せた候補者は投票締切0秒到達と同時に
+    //   resultStatus が自動で "certain" に書き換えられます。
+    // -------------------------------------------------------
     showCertainAnnouncement: true,
 
-    // 当選確実候補者の氏名・選挙区名（showCertainAnnouncement=trueのとき使用）
-    certainName: "山田 太郎",
-    certainDistrict: "東京都第1選挙区"
+    certainCandidates: [
+      { name: "山田 太郎",  district: "東京都第1選挙区" },
+      { name: "高橋 誠",    district: "東京都第2選挙区" }
+      // 必要なだけ追加: { name: "○○ ○○", district: "□□選挙区" }
+    ]
   },
 
   // ===== 速報ティッカーが1周するのにかかる時間（秒） =====
@@ -1189,18 +1201,27 @@ function closeNewsModal() {
 /* ---------------------------------------------------------------------
    投票締切カウントダウンの初期化
    ---------------------------------------------------------------------
-   ・phase-3 かつ SITE_CONFIG.countdown.enabled = true のときのみ動作します
-   ・残り10分〜6秒  : 小さめの数字を常時表示
-   ・残り5秒〜0秒   : 大きく拡大表示
-   ・0秒到達後      : 「投票が締め切られました」を表示
-   ・当選確実フラグがONなら、続けて「当選確実」と候補者名を表示
+   【修正済み】
+   ・ちらつき防止：グローバルタイマーIDを管理し、再呼出し時は必ずクリア
+   ・投票締切"前"には当選確実を絶対に表示しない
+   ・締切0秒到達と同時に certainCandidates の全員を resultStatus="certain" に自動変更
+     → renderDistricts() を呼んで候補者一覧にも即時反映
+   ・certainCandidates は配列なので何人でも設定可能
 --------------------------------------------------------------------- */
+let _countdownTimerId = null; // ちらつき防止：タイマーIDをグローバル管理
+
 function initCountdown() {
+  // ---- 既存タイマーを必ずクリア（重複起動によるちらつき防止） ----
+  if (_countdownTimerId !== null) {
+    clearInterval(_countdownTimerId);
+    _countdownTimerId = null;
+  }
+
   const overlay = document.getElementById("countdownOverlay");
   const content = document.getElementById("countdownContent");
   const cfg = SITE_CONFIG.countdown;
 
-  // phase-3以外、またはカウントダウンが無効な場合は何もしない
+  // phase-3以外、またはカウントダウンが無効な場合はオーバーレイを消して終了
   if (getCurrentPhase() !== "3" || !cfg.enabled) {
     overlay.classList.remove("is-visible");
     return;
@@ -1208,16 +1229,63 @@ function initCountdown() {
 
   const deadlineTime = new Date(cfg.deadline).getTime();
   if (isNaN(deadlineTime)) {
-    console.warn("SITE_CONFIG.countdown.deadline の日時形式が正しくありません:", cfg.deadline);
+    console.warn("deadline の日時形式が正しくありません:", cfg.deadline);
     return;
   }
 
-  let timerId = null;
+  // 当選確実候補リスト（旧形式 certainName との互換維持）
+  const certainList = Array.isArray(cfg.certainCandidates) && cfg.certainCandidates.length > 0
+    ? cfg.certainCandidates
+    : (cfg.certainName ? [{ name: cfg.certainName, district: cfg.certainDistrict || "" }] : []);
+
+  // 締切到達後に1度だけ実行するフラグ
+  let finalized = false;
+
+  /* 締切0秒到達時の処理 */
+  function finalize() {
+    if (finalized) return;
+    finalized = true;
+
+    // ---- certainCandidates に載っている候補者を自動で当選確実に変更 ----
+    if (cfg.showCertainAnnouncement && certainList.length > 0) {
+      const certainNames = new Set(certainList.map(function(c){ return c.name; }));
+      let changed = false;
+      ELECTION_DATA.forEach(function(district) {
+        district.candidates.forEach(function(candidate) {
+          if (certainNames.has(candidate.name) && candidate.resultStatus !== "certain") {
+            candidate.resultStatus = "certain";
+            changed = true;
+          }
+        });
+      });
+      if (changed) renderDistricts(); // 候補者一覧を即時再描画
+    }
+
+    // ---- オーバーレイに締切メッセージ＋当選確実を表示 ----
+    let html = '<div class="countdown-end-text">投票が締め切られました</div>';
+
+    if (cfg.showCertainAnnouncement && certainList.length > 0) {
+      certainList.forEach(function(c) {
+        html += '<div class="countdown-certain-block">'
+              + '<div class="countdown-certain-label">当選確実</div>'
+              + '<div class="countdown-certain-name">'  + escapeHTML(c.name)     + '</div>'
+              + '<div class="countdown-certain-district">' + escapeHTML(c.district) + '</div>'
+              + '</div>';
+      });
+    }
+
+    html += '<button class="countdown-close-btn" id="countdownCloseBtn">閉じる</button>';
+    content.innerHTML = html;
+
+    document.getElementById("countdownCloseBtn").addEventListener("click", function() {
+      overlay.classList.remove("is-visible");
+    });
+  }
 
   function tick() {
     const diff = deadlineTime - Date.now(); // 残りミリ秒
 
-    // 残り10分より前：オーバーレイは表示しない
+    // ---- 残り10分より前：オーバーレイは表示しない ----
     if (diff > 10 * 60 * 1000) {
       overlay.classList.remove("is-visible");
       return;
@@ -1226,44 +1294,30 @@ function initCountdown() {
     overlay.classList.add("is-visible");
 
     if (diff > 5000) {
-      // ----- 残り10分〜6秒：やや小さめの数字を常時表示 -----
+      // ---- 残り10分〜6秒：通常カウントダウン表示 ----
       const totalSec = Math.ceil(diff / 1000);
       const min = Math.floor(totalSec / 60);
       const sec = totalSec % 60;
-      content.innerHTML = `
-        <div class="countdown-small-label">投票締切まで</div>
-        <div class="countdown-small-time">${min}:${String(sec).padStart(2, "0")}</div>
-      `;
+      content.innerHTML = '<div class="countdown-small-label">投票締切まで</div>'
+        + '<div class="countdown-small-time">' + min + ':' + String(sec).padStart(2, "0") + '</div>';
+
     } else if (diff > 0) {
-      // ----- 残り5秒〜0秒：大きく拡大表示 -----
+      // ---- 残り5秒〜1秒：大きく拡大（当選確実はまだ出さない） ----
       const sec = Math.ceil(diff / 1000);
-      content.innerHTML = `<div class="countdown-large-time">${sec}</div>`;
+      content.innerHTML = '<div class="countdown-large-time">' + sec + '</div>';
+
     } else {
-      // ----- 0秒到達後：締切メッセージ（＋当選確実表示） -----
-      let html = `<div class="countdown-end-text">投票が締め切られました</div>`;
-
-      if (cfg.showCertainAnnouncement) {
-        html += `
-          <div class="countdown-certain-label">当選確実</div>
-          <div class="countdown-certain-name">${escapeHTML(cfg.certainName)}</div>
-          <div class="countdown-certain-district">${escapeHTML(cfg.certainDistrict)}</div>
-        `;
+      // ---- 0秒到達：タイマー停止 → 締切・当選確実処理 ----
+      if (_countdownTimerId !== null) {
+        clearInterval(_countdownTimerId);
+        _countdownTimerId = null;
       }
-
-      html += `<button class="countdown-close-btn" id="countdownCloseBtn">閉じる</button>`;
-      content.innerHTML = html;
-
-      document.getElementById("countdownCloseBtn").addEventListener("click", () => {
-        overlay.classList.remove("is-visible");
-      });
-
-      // 締切後は更新不要なのでタイマー停止
-      if (timerId) clearInterval(timerId);
+      finalize();
     }
   }
 
   tick();
-  timerId = setInterval(tick, 250);
+  _countdownTimerId = setInterval(tick, 500); // 500ms間隔でちらつきを抑制
 }
 
 /* ---------------------------------------------------------------------
