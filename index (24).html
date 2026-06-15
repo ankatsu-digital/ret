@@ -1,0 +1,1291 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>選挙特設サイト</title>
+
+<!-- =====================================================================
+     【このファイルについて】
+     ・単体のHTMLファイルです（CSS/JSも全てこのファイル内に記述しています）
+     ・既存サイトに埋め込む場合は <iframe src="index.html" style="width:100%;border:0;"></iframe>
+       のようにiframeで読み込むか、このファイルをそのまま1ページとして公開してください。
+
+     【主な編集ポイント（このファイル内を検索してください）】
+     1. <body class="phase-3">  … 表示フェーズの切替（phase-1 / phase-2 / phase-3）
+     2. :root { ... }           … 色・余白・フォントなどのデザイン設定
+     3. SITE_CONFIG             … カウントダウンやティッカー速度などの全体設定
+     4. ELECTION_DATA           … 選挙区・候補者データ
+     5. NEWS_DATA               … フェーズ別ニュースデータ
+     6. TICKER_ITEMS            … 速報ティッカーに流す文言
+
+     【管理画面（admin.html）について】
+     候補者・ニュース・設定などをフォームで編集し、Firestoreに保存したり
+     このファイルに貼り付けるコードを生成できる管理画面を別ファイルとして
+     用意しています（admin.html）。
+===================================================================== */-->
+
+<style>
+/* =====================================================================
+   ▼▼▼ デザイン設定（CSS変数） ▼▼▼
+   ここの値を変更するだけで、サイト全体の配色・余白・フォントが変わります。
+===================================================================== */
+:root {
+  /* ---- 色設定 ---- */
+  --color-primary: #c8102e;        /* メインカラー（赤） */
+  --color-primary-dark: #9e0c22;   /* メインカラー（濃い赤・ホバー等で使用） */
+  --color-primary-light: #fdecef;  /* メインカラーの薄い背景色 */
+
+  --color-bg: #ffffff;             /* ページ全体の背景色 */
+  --color-bg-sub: #f6f6f6;         /* カードや行の背景色（薄いグレー） */
+  --color-border: #e3e3e3;         /* 枠線の色 */
+
+  --color-text: #1a1a1a;           /* 基本の文字色 */
+  --color-text-sub: #767676;       /* 補足文字色（ふりがな・日時など） */
+
+  --color-ticker-bg: #111111;      /* 速報ティッカーの背景色（黒） */
+  --color-ticker-text: #ffffff;    /* 速報ティッカーの文字色 */
+
+  /* ---- 当落バッジの色 ---- */
+  --color-badge-certain: #ff7a7a;  /* 当確バッジ */
+  --color-badge-elected: #c8102e;  /* 当選バッジ */
+  --color-badge-lost: #9e9e9e;     /* 落選バッジ */
+
+  /* ---- フェーズバッジの色 ---- */
+  --color-phase1: #8a8a8a;         /* 告示前 */
+  --color-phase2: #2d6cdf;         /* 選挙運動期間中 */
+  --color-phase3: #c8102e;         /* 投票日・開票中 */
+
+  /* ---- フォント設定 ---- */
+  --font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", "Meiryo", sans-serif;
+
+  /* ---- 角丸・余白設定 ---- */
+  --radius-l: 12px;
+  --radius-m: 8px;
+  --radius-s: 4px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 40px;
+
+  /* ---- レイアウト幅 ---- */
+  --max-width: 920px;
+
+  /* ---- 速報ティッカーの流れる速さ（JSから上書きされます） ---- */
+  --ticker-speed: 25s;
+}
+
+/* =====================================================================
+   ▼▼▼ 全体リセット・基本設定 ▼▼▼
+===================================================================== */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+html {
+  font-family: var(--font-family);
+}
+body {
+  color: var(--color-text);
+  background: var(--color-bg);
+  line-height: 1.7;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+img {
+  max-width: 100%;
+  display: block;
+}
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+ul {
+  list-style: none;
+}
+a {
+  color: var(--color-primary);
+}
+
+/* =====================================================================
+   ▼▼▼ ヘッダー（サイトタイトル＋現在フェーズバッジ） ▼▼▼
+===================================================================== */
+.site-header {
+  border-bottom: 3px solid var(--color-primary);
+  padding: var(--space-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  background: var(--color-bg);
+}
+.site-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.site-title small {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--color-text-sub);
+  margin-top: 2px;
+}
+
+/* 現在のフェーズを示すバッジ。色はbodyのclass(phase-1/2/3)に応じて自動で変わります */
+.phase-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #fff;
+  background: var(--color-phase1);
+  white-space: nowrap;
+}
+body.phase-1 .phase-badge { background: var(--color-phase1); }
+body.phase-2 .phase-badge { background: var(--color-phase2); }
+body.phase-3 .phase-badge { background: var(--color-phase3); }
+
+/* =====================================================================
+   ▼▼▼ ニュース速報ティッカー（黒背景・自動スクロール） ▼▼▼
+===================================================================== */
+.news-ticker {
+  background: var(--color-ticker-bg);
+  color: var(--color-ticker-text);
+  overflow: hidden;
+  white-space: nowrap;
+  padding: 7px 0;
+  font-size: 0.85rem;
+}
+.ticker-track {
+  display: inline-block;
+  padding-left: 100%;
+  /* 流れる速さは SITE_CONFIG.tickerSpeedSec で調整できます */
+  animation: ticker-scroll var(--ticker-speed) linear infinite;
+}
+.ticker-track .ticker-label {
+  display: inline-block;
+  background: var(--color-primary);
+  color: #fff;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: var(--radius-s);
+  margin-right: var(--space-md);
+}
+@keyframes ticker-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-100%); }
+}
+
+/* =====================================================================
+   ▼▼▼ 全体コンテナ ▼▼▼
+===================================================================== */
+.container {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: var(--space-lg) var(--space-md);
+}
+.section-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  border-left: 5px solid var(--color-primary);
+  padding-left: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+/* =====================================================================
+   ▼▼▼ 選挙区ブロック・候補者一覧 ▼▼▼
+===================================================================== */
+.district-block {
+  margin-bottom: var(--space-xl);
+}
+.district-name {
+  background: var(--color-primary);
+  color: #fff;
+  font-weight: 700;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-m) var(--radius-m) 0 0;
+  font-size: 1rem;
+}
+.district-meta {
+  font-size: 0.78rem;
+  color: var(--color-text-sub);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-bg-sub);
+  border-bottom: 1px solid var(--color-border);
+}
+.candidate-list {
+  border: 1px solid var(--color-border);
+  border-radius: 0 0 var(--radius-m) var(--radius-m);
+  overflow: hidden;
+}
+
+/* ---- 候補者の行 ---- */
+.candidate-row {
+  border-bottom: 1px solid var(--color-border);
+}
+.candidate-row:last-child {
+  border-bottom: none;
+}
+.candidate-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.candidate-main:hover {
+  background: var(--color-bg-sub);
+}
+/* 落選者の行を少し薄く表示（phase-3のときのみ） */
+body.phase-3 .candidate-row.is-lost .candidate-main {
+  opacity: 0.55;
+}
+
+.candidate-name-block {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.candidate-furigana {
+  font-size: 0.72rem;
+  color: var(--color-text-sub);
+}
+.candidate-name {
+  font-size: 1.08rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 1px;
+}
+.candidate-attrs {
+  display: flex;
+  gap: 6px;
+  margin-top: 5px;
+  flex-wrap: wrap;
+}
+.attr-badge {
+  font-size: 0.7rem;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--color-bg-sub);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-sub);
+}
+/* 現職/新人/元職 のバッジは少し強調 */
+.attr-badge.attr-status {
+  color: var(--color-primary);
+  border-color: var(--color-primary-light);
+  background: var(--color-primary-light);
+}
+
+/* ---- 当落バッジ（当確／当選／落選） ----
+   「未確定」の場合は何も表示しません（空欄） */
+.result-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #fff;
+  padding: 2px 9px;
+  border-radius: var(--radius-s);
+  white-space: nowrap;
+}
+.result-badge--certain { background: var(--color-badge-certain); } /* 当確 */
+.result-badge--elected { background: var(--color-badge-elected); } /* 当選 */
+.result-badge--lost    { background: var(--color-badge-lost); }    /* 落選 */
+
+/* ---- 得票数・得票率の横棒グラフ ---- */
+.candidate-vote-info {
+  flex: 0 0 150px;
+  text-align: right;
+}
+.vote-count {
+  font-size: 0.98rem;
+  font-weight: 700;
+  font-feature-settings: "tnum"; /* 数字の幅を揃える */
+}
+.vote-bar {
+  background: var(--color-bg-sub);
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 5px 0;
+}
+.vote-bar-fill {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 999px;
+}
+.vote-rate {
+  font-size: 0.74rem;
+  color: var(--color-text-sub);
+}
+
+/* ---- フェーズ1（告示前）／フェーズ2（選挙運動期間）では
+       得票数・得票率・当落バッジを非表示にする ---- */
+body.phase-1 .candidate-vote-info,
+body.phase-1 .result-badge,
+body.phase-2 .candidate-vote-info,
+body.phase-2 .result-badge {
+  display: none;
+}
+
+/* ---- 詳細パネルの開閉アイコン ---- */
+.expand-toggle {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  color: var(--color-text-sub);
+  transition: transform 0.2s ease;
+}
+.candidate-row.is-open .expand-toggle {
+  transform: rotate(180deg);
+}
+
+/* ---- 候補者詳細パネル（経歴・公約・コメントなど） ---- */
+.candidate-detail {
+  padding: 0 var(--space-md);
+  background: var(--color-bg-sub);
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease, padding 0.3s ease;
+}
+.candidate-row.is-open .candidate-detail {
+  padding: var(--space-md);
+  max-height: 800px; /* 内容が多い場合はこの値を増やしてください */
+}
+.detail-heading {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  margin-top: var(--space-sm);
+}
+.detail-heading:first-child {
+  margin-top: 0;
+}
+.detail-text {
+  font-size: 0.85rem;
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+.detail-list {
+  font-size: 0.85rem;
+  margin-top: 4px;
+  padding-left: 1.3em;
+  list-style: disc;
+}
+.detail-list li {
+  margin-bottom: 2px;
+}
+
+/* =====================================================================
+   ▼▼▼ 選挙関連ニュース ▼▼▼
+===================================================================== */
+.news-section {
+  margin-top: var(--space-xl);
+}
+.news-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-md);
+}
+.news-item {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+  cursor: pointer;
+  background: #fff;
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+.news-item:hover {
+  box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+  transform: translateY(-2px);
+}
+.news-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background-size: cover;
+  background-position: center;
+  background-color: var(--color-bg-sub);
+}
+.news-info {
+  padding: var(--space-sm) var(--space-md) var(--space-md);
+}
+.news-tags {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.news-tag {
+  font-size: 0.65rem;
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  padding: 1px 7px;
+  border-radius: var(--radius-s);
+  font-weight: 700;
+}
+.news-date {
+  font-size: 0.7rem;
+  color: var(--color-text-sub);
+}
+.news-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  margin-top: 3px;
+}
+.news-empty {
+  font-size: 0.85rem;
+  color: var(--color-text-sub);
+  padding: var(--space-md);
+  text-align: center;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-m);
+}
+
+/* =====================================================================
+   ▼▼▼ ニュース詳細モーダル ▼▼▼
+===================================================================== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-md);
+  z-index: 900;
+}
+.modal-overlay.is-open {
+  display: flex;
+}
+.modal-content {
+  background: #fff;
+  border-radius: var(--radius-l);
+  max-width: 600px;
+  width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+  position: relative;
+}
+.modal-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 1.4rem;
+  width: 36px;
+  height: 36px;
+  line-height: 36px;
+  text-align: center;
+  background: rgba(255,255,255,0.85);
+  border-radius: 50%;
+  z-index: 2;
+}
+.modal-image {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: var(--color-bg-sub);
+  border-radius: var(--radius-l) var(--radius-l) 0 0;
+}
+.modal-tags {
+  display: flex;
+  gap: 4px;
+  margin: var(--space-md) var(--space-md) 0;
+  flex-wrap: wrap;
+}
+.modal-date {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--color-text-sub);
+  margin: 6px var(--space-md) 0;
+}
+.modal-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin: 6px var(--space-md) 0;
+}
+.modal-body {
+  font-size: 0.9rem;
+  margin: var(--space-sm) var(--space-md) var(--space-lg);
+  white-space: pre-wrap;
+}
+
+/* =====================================================================
+   ▼▼▼ 投票締切カウントダウン（全画面オーバーレイ） ▼▼▼
+===================================================================== */
+.countdown-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.9);
+  color: #fff;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  text-align: center;
+  z-index: 1000;
+  padding: var(--space-md);
+}
+.countdown-overlay.is-visible {
+  display: flex;
+}
+/* 残り10分〜6秒：やや小さめの常時表示 */
+.countdown-small-label {
+  font-size: 1rem;
+  letter-spacing: 0.15em;
+  margin-bottom: 8px;
+  color: #ccc;
+}
+.countdown-small-time {
+  font-size: 3.2rem;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+/* 残り5秒〜0秒：大きく拡大表示 */
+.countdown-large-time {
+  font-size: min(45vw, 16rem);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--color-primary);
+  font-feature-settings: "tnum";
+}
+/* 投票締切後の表示 */
+.countdown-end-text {
+  font-size: min(13vw, 3.2rem);
+  font-weight: 700;
+  margin-bottom: var(--space-lg);
+}
+.countdown-certain-label {
+  font-size: min(8vw, 1.8rem);
+  font-weight: 700;
+  color: var(--color-badge-certain);
+  letter-spacing: 0.2em;
+}
+.countdown-certain-name {
+  font-size: min(14vw, 3.6rem);
+  font-weight: 700;
+  margin-top: 10px;
+}
+.countdown-certain-district {
+  font-size: 1rem;
+  color: #ccc;
+  margin-top: 6px;
+}
+.countdown-close-btn {
+  margin-top: var(--space-lg);
+  border: 1px solid #fff;
+  color: #fff;
+  padding: 8px 28px;
+  border-radius: 999px;
+  font-size: 0.9rem;
+}
+.countdown-close-btn:hover {
+  background: rgba(255,255,255,0.15);
+}
+
+/* =====================================================================
+   ▼▼▼ フッター ▼▼▼
+===================================================================== */
+.site-footer {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--color-text-sub);
+  padding: var(--space-lg) var(--space-md);
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--space-xl);
+}
+
+/* =====================================================================
+   ▼▼▼ レスポンシブ対応（スマホ表示） ▼▼▼
+===================================================================== */
+@media (max-width: 600px) {
+  .site-title {
+    font-size: 1.05rem;
+  }
+  .candidate-main {
+    flex-wrap: wrap;
+  }
+  .candidate-vote-info {
+    flex: 1 1 100%;
+    text-align: left;
+    margin-top: var(--space-sm);
+  }
+  .vote-count, .vote-rate {
+    display: inline-block;
+  }
+  .vote-rate {
+    margin-left: 8px;
+  }
+  .expand-toggle {
+    align-self: flex-start;
+  }
+}
+</style>
+</head>
+
+<!-- =====================================================================
+     ▼▼▼ フェーズ切替（ここが最重要） ▼▼▼
+     bodyタグのclassを書き換えることで、サイト全体の表示が一括で切り替わります。
+
+       phase-1 … 告示前　　　　　　：票数・当落バッジ非表示／候補者紹介のみ
+       phase-2 … 告示後・選挙運動期間：票数・当落バッジ非表示／候補者紹介のみ
+       phase-3 … 投票日・開票　　　：票数・得票率・当確/当選/落選バッジを表示
+
+     例）告示前にする場合 → <body class="phase-1">
+===================================================================== -->
+<body class="phase-3">
+
+<!-- ===================== ヘッダー ===================== -->
+<header class="site-header">
+  <div class="site-title">
+    2026年 ○○選挙 特設サイト
+    <small>○○選挙区 開票・候補者情報</small>
+  </div>
+  <!-- 現在のフェーズを示すバッジ。文字と色はbodyのclassからJSで自動設定されます -->
+  <span class="phase-badge" id="phaseBadge"></span>
+</header>
+
+<!-- ===================== ニュース速報ティッカー ===================== -->
+<div class="news-ticker">
+  <div class="ticker-track" id="tickerTrack"></div>
+</div>
+
+<!-- ===================== メインコンテンツ ===================== -->
+<main class="container">
+
+  <!-- 選挙区・候補者一覧（ELECTION_DATAから自動生成されます） -->
+  <section id="districtsContainer"></section>
+
+  <!-- 選挙関連ニュース（現在のフェーズに対応するNEWS_DATAのみ表示） -->
+  <section class="news-section">
+    <h2 class="section-title">選挙関連ニュース</h2>
+    <div class="news-list" id="newsListContainer"></div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  &copy; 2026 ○○選挙特設サイト
+</footer>
+
+<!-- ===================== ニュース詳細モーダル ===================== -->
+<div class="modal-overlay" id="newsModal">
+  <div class="modal-content">
+    <button class="modal-close" id="modalClose" aria-label="閉じる">×</button>
+    <img class="modal-image" id="modalImage" src="" alt="ニュース画像">
+    <div class="modal-tags" id="modalTags"></div>
+    <time class="modal-date" id="modalDate"></time>
+    <h3 class="modal-title" id="modalTitle"></h3>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<!-- ===================== 投票締切カウントダウン オーバーレイ ===================== -->
+<!-- phase-3 かつ SITE_CONFIG.countdown.enabled = true のときのみ表示されます -->
+<div class="countdown-overlay" id="countdownOverlay">
+  <div id="countdownContent"></div>
+</div>
+
+<script>
+/* =====================================================================
+   ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+   【編集ガイド】このスクリプト内の以下のエリアを編集してください。
+     1. SITE_CONFIG    : カウントダウン・ティッカー速度などの全体設定
+     2. ELECTION_DATA  : 選挙区・候補者データ
+     3. NEWS_DATA      : フェーズ別ニュースデータ
+     4. TICKER_ITEMS   : 速報ティッカーに流す文言
+   この下にあるレンダリング処理（renderXxx関数）は通常編集不要です。
+   ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+===================================================================== */
+
+/* ---------------------------------------------------------------------
+   1. SITE_CONFIG … 全体設定
+--------------------------------------------------------------------- */
+const SITE_CONFIG = {
+
+  // ===== 投票締切カウントダウンの設定 =====
+  // ※ phase-3（投票日・開票）のときのみ有効になります
+  countdown: {
+    // true … カウントダウンオーバーレイを表示する / false … 表示しない
+    enabled: true,
+
+    // 投票締切の日時（ISO8601形式。末尾の +09:00 は日本時間の意味）
+    deadline: "2026-10-25T20:00:00+09:00",
+
+    // true … 締切後に「当選確実」表示を行う / false … 行わない
+    showCertainAnnouncement: true,
+
+    // 当選確実候補者の氏名・選挙区名（showCertainAnnouncement=trueのとき使用）
+    certainName: "山田 太郎",
+    certainDistrict: "東京都第1選挙区"
+  },
+
+  // ===== 速報ティッカーが1周するのにかかる時間（秒） =====
+  // 値を小さくすると速く、大きくするとゆっくり流れます
+  tickerSpeedSec: 22
+};
+
+/* ---------------------------------------------------------------------
+   2. ELECTION_DATA … 選挙区・候補者データ
+   ---------------------------------------------------------------------
+   district  : { name, meta, candidates: [...] }
+   candidate : {
+     name        氏名
+     furigana    ふりがな
+     party       党派
+     age         年齢
+     status      属性（"現職" / "新人" / "元職" など）
+     votes       得票数（数値、未確定なら現在の集計値でもOK）
+     voteRate    得票率（%、数値）
+     resultStatus  当落区分
+                   "certain" = 当確 / "elected" = 当選
+                   "lost"    = 落選 / ""        = 未確定（空欄表示）
+     career      経歴
+     pledges     公約（配列。1要素＝1項目）
+     comment     本人コメント
+   }
+--------------------------------------------------------------------- */
+const ELECTION_DATA = [
+  {
+    name: "東京都第1選挙区",
+    meta: "改選数 1　／　投票率 55.32%（前回比 +2.1pt）",
+    candidates: [
+      {
+        name: "山田 太郎",
+        furigana: "やまだ たろう",
+        party: "民主改新党",
+        age: 52,
+        status: "現職",
+        votes: 128543,
+        voteRate: 48.3,
+        resultStatus: "certain", // 当確
+        career: "1998年〇〇大学法学部卒業。市議会議員を2期務めたのち、2012年衆議院議員初当選。以来4期連続当選。総務委員会、予算委員会等に所属。",
+        pledges: [
+          "子育て・教育支援の拡充",
+          "地域医療体制の強化",
+          "中小企業への支援強化と賃上げ環境の整備"
+        ],
+        comment: "皆様からの温かいご支援に心より感謝申し上げます。これからも地域の声を国政に届けるため、全力で取り組んでまいります。"
+      },
+      {
+        name: "鈴木 花子",
+        furigana: "すずき はなこ",
+        party: "国民未来党",
+        age: 45,
+        status: "新人",
+        votes: 98214,
+        voteRate: 36.9,
+        resultStatus: "lost", // 落選
+        career: "〇〇新聞記者として15年間取材活動に従事。教育・福祉分野の取材を多く手がける。2025年、政界転身を表明し新人候補として出馬。",
+        pledges: [
+          "教育費の無償化拡大",
+          "女性管理職比率の向上",
+          "行政手続きのデジタル化推進"
+        ],
+        comment: "結果は残念ですが、選挙戦でいただいた多くのご意見は今後の地域活動に必ず生かしてまいります。応援してくださった皆様、ありがとうございました。"
+      },
+      {
+        name: "佐藤 健一",
+        furigana: "さとう けんいち",
+        party: "無所属",
+        age: 60,
+        status: "元職",
+        votes: 39021,
+        voteRate: 14.8,
+        resultStatus: "lost", // 落選
+        career: "県議会議員を3期務めた後、2021年衆議院議員に初当選するも1期で落選。今回は無所属で再挑戦。",
+        pledges: [
+          "地方分権の推進",
+          "公共インフラの維持・更新",
+          "高齢者福祉の充実"
+        ],
+        comment: "ご支援いただいた皆様には深く感謝申し上げます。地域のため、形を変えて活動を続けてまいります。"
+      }
+    ]
+  },
+  {
+    name: "東京都第2選挙区",
+    meta: "改選数 1　／　投票率 52.10%（前回比 -1.4pt）",
+    candidates: [
+      {
+        name: "高橋 誠",
+        furigana: "たかはし まこと",
+        party: "平和改革連合",
+        age: 58,
+        status: "現職",
+        votes: 110532,
+        voteRate: 51.2,
+        resultStatus: "elected", // 当選（確定）
+        career: "〇〇市長を2期務めたのち、2018年衆議院議員初当選。現在3期目。外交・安全保障を中心に活動。",
+        pledges: [
+          "防災・減災対策の強化",
+          "観光振興による地域経済の活性化",
+          "再生可能エネルギー導入の推進"
+        ],
+        comment: "当選確定のご報告ができ、安堵しております。お約束した政策の実現に向け、初日から全力を尽くします。"
+      },
+      {
+        name: "田中 陽子",
+        furigana: "たなか ようこ",
+        party: "国民未来党",
+        age: 39,
+        status: "新人",
+        votes: 89123,
+        voteRate: 41.3,
+        resultStatus: "lost", // 落選
+        career: "NPO法人代表として子育て支援活動に10年以上従事。今回が初めての選挙への挑戦。",
+        pledges: [
+          "保育施設の増設と待機児童ゼロ",
+          "ひとり親家庭への支援拡充",
+          "学校給食の無償化"
+        ],
+        comment: "悔しい結果ですが、活動の中でいただいた声は今後も形にしていきたいと思います。本当にありがとうございました。"
+      },
+      {
+        name: "伊藤 大輔",
+        furigana: "いとう だいすけ",
+        party: "緑の未来党",
+        age: 33,
+        status: "新人",
+        votes: 16234,
+        voteRate: 7.5,
+        resultStatus: "", // 未確定（空欄表示）
+        career: "環境系シンクタンク研究員。気候変動対策の政策提言を行ってきた。今回が初出馬。",
+        pledges: [
+          "脱炭素社会の実現に向けた条例整備",
+          "若者世代の政治参加promotion",
+          "公共交通の利便性向上"
+        ],
+        comment: "最後まで結果を見届けたいと思います。投票してくださった皆様に感謝いたします。"
+      }
+    ]
+  }
+];
+
+/* ---------------------------------------------------------------------
+   3. NEWS_DATA … フェーズ別 選挙関連ニュース
+   ---------------------------------------------------------------------
+   現在のbody class（phase-1/2/3）に対応するものだけが一覧表示されます。
+   各ニュース項目をクリックするとモーダルで詳細が表示されます。
+
+   item: {
+     id     : 一意のID（文字列）
+     title  : 見出し
+     date   : 日時表示（任意の文字列）
+     tags   : タグ（配列）
+     image  : 画像URL（空文字でも可。その場合は画像領域が空欄になります）
+     body   : 詳細本文
+   }
+--------------------------------------------------------------------- */
+const NEWS_DATA = {
+
+  /* ----- phase1：告示前 ----- */
+  phase1: [
+    {
+      id: "p1-1",
+      title: "立候補予定者説明会が開催されました",
+      date: "2026年10月1日 10:00",
+      tags: ["告示前", "選挙準備"],
+      image: "https://picsum.photos/seed/election101/640/360",
+      body: "選挙管理委員会は10月1日、立候補予定者を対象とした説明会を開催しました。出席した各陣営の関係者には、選挙運動の期間や規則、ポスター掲示場の利用方法などについて説明が行われました。\n\n投票は10月25日に行われる予定です。"
+    },
+    {
+      id: "p1-2",
+      title: "各党が公約発表会を実施",
+      date: "2026年10月5日 18:30",
+      tags: ["告示前", "公約"],
+      image: "https://picsum.photos/seed/election102/640/360",
+      body: "主要各党は5日、それぞれ記者会見を開き、今回の選挙に向けた公約の骨子を発表しました。経済対策や子育て支援などが主要なテーマとして挙げられています。\n\n各候補者の詳しい公約は、本サイトの候補者情報からご覧いただけます。"
+    }
+  ],
+
+  /* ----- phase2：告示後・選挙運動期間 ----- */
+  phase2: [
+    {
+      id: "p2-1",
+      title: "選挙戦がスタート、各陣営が第一声",
+      date: "2026年10月10日 08:30",
+      tags: ["選挙運動", "第一声"],
+      image: "https://picsum.photos/seed/election201/640/360",
+      body: "選挙が告示され、立候補者は各地で第一声を上げました。いずれの陣営も支持を求める声を有権者に届けようと、街頭演説を行いました。\n\n投開票は10月25日です。"
+    },
+    {
+      id: "p2-2",
+      title: "公開討論会が開催されました",
+      date: "2026年10月18日 19:00",
+      tags: ["選挙運動", "討論会"],
+      image: "https://picsum.photos/seed/election202/640/360",
+      body: "立候補者による公開討論会が18日、市民会館で開催されました。経済政策や地域課題について、各候補者がそれぞれの考えを述べました。\n\n会場には多くの有権者が訪れ、熱心に耳を傾けていました。"
+    },
+    {
+      id: "p2-3",
+      title: "期日前投票が開始されました",
+      date: "2026年10月19日 08:30",
+      tags: ["選挙運動", "投票"],
+      image: "https://picsum.photos/seed/election203/640/360",
+      body: "10月19日より、期日前投票が各地の指定会場で始まりました。投票期間中は身分証明書を持参の上、お近くの期日前投票所をご利用ください。"
+    }
+  ],
+
+  /* ----- phase3：投票日・開票 ----- */
+  phase3: [
+    {
+      id: "p3-1",
+      title: "投票が締め切られました",
+      date: "2026年10月25日 20:00",
+      tags: ["速報", "開票"],
+      image: "https://picsum.photos/seed/election301/640/360",
+      body: "10月25日午後8時、各投票所で投票が締め切られました。これより各選挙区で開票作業が始まります。最新の開票状況は本サイトの候補者一覧をご確認ください。"
+    },
+    {
+      id: "p3-2",
+      title: "東京都第1選挙区　山田太郎氏に当選確実",
+      date: "2026年10月25日 20:03",
+      tags: ["速報", "当確"],
+      image: "https://picsum.photos/seed/election302/640/360",
+      body: "投票締切と同時の情勢調査の結果、東京都第1選挙区では現職の山田太郎氏（民主改新党）に当選確実の報が出ました。山田氏は4期目の当選となります。"
+    },
+    {
+      id: "p3-3",
+      title: "東京都第2選挙区　高橋誠氏の当選が確定",
+      date: "2026年10月25日 22:40",
+      tags: ["開票", "当選確定"],
+      image: "https://picsum.photos/seed/election303/640/360",
+      body: "開票作業の結果、東京都第2選挙区では高橋誠氏（平和改革連合）の当選が確定しました。高橋氏は3期目となります。他候補との票差は2万票余りでした。"
+    }
+  ]
+};
+
+/* ---------------------------------------------------------------------
+   4. TICKER_ITEMS … 速報ティッカーに流す文言（配列）
+   ---------------------------------------------------------------------
+   ここに入れた文字列が「｜」で区切られながら左に流れます。
+--------------------------------------------------------------------- */
+const TICKER_ITEMS = [
+  "午後8時、投票が締め切られました",
+  "東京都第1選挙区　山田太郎氏（民主改新党）に当選確実",
+  "東京都第2選挙区　高橋誠氏（平和改革連合）の当選が確定",
+  "投票率は前回を上回る見通し　詳細は選挙管理委員会が発表予定"
+];
+
+
+/* =====================================================================
+   ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+   以下、画面描画・イベント処理（通常は編集不要です）
+   ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+===================================================================== */
+
+// --- 現在のフェーズ番号（"1" / "2" / "3"）をbodyのclassから取得 ---
+function getCurrentPhase() {
+  const m = document.body.className.match(/phase-(\d)/);
+  return m ? m[1] : "1";
+}
+
+// --- ヘッダーのフェーズバッジの文言を更新 ---
+function updatePhaseBadge() {
+  const labels = {
+    "1": "告示前",
+    "2": "選挙運動期間中",
+    "3": "投票日・開票中"
+  };
+  const phase = getCurrentPhase();
+  document.getElementById("phaseBadge").textContent = labels[phase] || "";
+}
+
+// --- 速報ティッカーの初期化 ---
+function initTicker() {
+  const track = document.getElementById("tickerTrack");
+  const text = TICKER_ITEMS.join("　　｜　　");
+  track.innerHTML = '<span class="ticker-label">速報</span>' + escapeHTML(text);
+  // SITE_CONFIG.tickerSpeedSec を反映
+  track.style.setProperty("--ticker-speed", SITE_CONFIG.tickerSpeedSec + "s");
+  track.style.animationDuration = SITE_CONFIG.tickerSpeedSec + "s";
+}
+
+// --- HTMLエスケープ（テキスト内の <, >, & などを安全に表示するため） ---
+function escapeHTML(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/* ---------------------------------------------------------------------
+   選挙区・候補者一覧の描画
+--------------------------------------------------------------------- */
+function renderDistricts() {
+  const container = document.getElementById("districtsContainer");
+  container.innerHTML = "";
+
+  ELECTION_DATA.forEach((district, dIndex) => {
+    const block = document.createElement("div");
+    block.className = "district-block";
+
+    const candidatesHTML = district.candidates
+      .map((c, cIndex) => renderCandidateRow(c, dIndex, cIndex))
+      .join("");
+
+    block.innerHTML = `
+      <div class="district-name">${escapeHTML(district.name)}</div>
+      <div class="district-meta">${escapeHTML(district.meta || "")}</div>
+      <div class="candidate-list">${candidatesHTML}</div>
+    `;
+    container.appendChild(block);
+  });
+
+  // 行クリックで詳細パネルを開閉
+  container.querySelectorAll(".candidate-main").forEach((el) => {
+    el.addEventListener("click", () => {
+      el.closest(".candidate-row").classList.toggle("is-open");
+    });
+  });
+}
+
+// --- 当落バッジのHTMLを返す（未確定の場合は空文字） ---
+function renderResultBadge(resultStatus) {
+  switch (resultStatus) {
+    case "certain":
+      return '<span class="result-badge result-badge--certain">当確</span>';
+    case "elected":
+      return '<span class="result-badge result-badge--elected">当選</span>';
+    case "lost":
+      return '<span class="result-badge result-badge--lost">落選</span>';
+    default:
+      // 未確定（空欄）：何も表示しない
+      return "";
+  }
+}
+
+// --- 候補者1名分の行HTMLを返す ---
+function renderCandidateRow(c, dIndex, cIndex) {
+  const rowClass = c.resultStatus === "lost" ? "candidate-row is-lost" : "candidate-row";
+  const votesText = (typeof c.votes === "number") ? c.votes.toLocaleString() + " 票" : "－";
+  const rateText = (typeof c.voteRate === "number") ? c.voteRate.toFixed(1) + "%" : "";
+  const rateWidth = (typeof c.voteRate === "number") ? c.voteRate : 0;
+
+  return `
+    <div class="${rowClass}" data-district="${dIndex}" data-candidate="${cIndex}">
+      <div class="candidate-main">
+        <div class="candidate-name-block">
+          <p class="candidate-furigana">${escapeHTML(c.furigana)}</p>
+          <h3 class="candidate-name">
+            ${escapeHTML(c.name)}
+            ${renderResultBadge(c.resultStatus)}
+          </h3>
+          <div class="candidate-attrs">
+            <span class="attr-badge">${escapeHTML(c.party)}</span>
+            <span class="attr-badge">${escapeHTML(String(c.age))}歳</span>
+            <span class="attr-badge attr-status">${escapeHTML(c.status)}</span>
+          </div>
+        </div>
+        <div class="candidate-vote-info">
+          <p class="vote-count">${votesText}</p>
+          <div class="vote-bar"><div class="vote-bar-fill" style="width:${rateWidth}%;"></div></div>
+          <p class="vote-rate">${rateText}</p>
+        </div>
+        <span class="expand-toggle">▼</span>
+      </div>
+      <div class="candidate-detail">
+        ${renderCandidateDetail(c)}
+      </div>
+    </div>
+  `;
+}
+
+// --- 候補者詳細パネル（経歴・公約・本人コメント・得票率）のHTMLを返す ---
+function renderCandidateDetail(c) {
+  const pledgesHTML = (c.pledges || [])
+    .map((p) => `<li>${escapeHTML(p)}</li>`)
+    .join("");
+  const rateText = (typeof c.voteRate === "number") ? c.voteRate.toFixed(1) + "%" : "未集計";
+
+  return `
+    <p class="detail-heading">経歴</p>
+    <p class="detail-text">${escapeHTML(c.career || "")}</p>
+
+    <p class="detail-heading">公約</p>
+    <ul class="detail-list">${pledgesHTML}</ul>
+
+    <p class="detail-heading">得票率</p>
+    <p class="detail-text candidate-detail-rate">${rateText}</p>
+
+    <p class="detail-heading">本人コメント</p>
+    <p class="detail-text">${escapeHTML(c.comment || "")}</p>
+  `;
+}
+
+/* ---------------------------------------------------------------------
+   選挙関連ニュース欄の描画（現在のフェーズ用データのみ表示）
+--------------------------------------------------------------------- */
+function renderNews() {
+  const phase = getCurrentPhase();
+  const items = NEWS_DATA["phase" + phase] || [];
+  const container = document.getElementById("newsListContainer");
+
+  if (items.length === 0) {
+    container.innerHTML = '<p class="news-empty">現在、表示できるニュースはありません。</p>';
+    return;
+  }
+
+  container.innerHTML = items
+    .map((item, i) => {
+      const bgImage = item.image ? `background-image:url('${item.image}')` : "";
+      return `
+        <article class="news-item" data-index="${i}">
+          <div class="news-thumb" style="${bgImage}"></div>
+          <div class="news-info">
+            <div class="news-tags">
+              ${(item.tags || []).map((t) => `<span class="news-tag">${escapeHTML(t)}</span>`).join("")}
+            </div>
+            <time class="news-date">${escapeHTML(item.date || "")}</time>
+            <h3 class="news-title">${escapeHTML(item.title || "")}</h3>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+
+  // ニュース項目クリックでモーダルを開く
+  container.querySelectorAll(".news-item").forEach((el) => {
+    el.addEventListener("click", () => {
+      const idx = Number(el.dataset.index);
+      openNewsModal(items[idx]);
+    });
+  });
+}
+
+/* ---------------------------------------------------------------------
+   ニュース詳細モーダルの開閉
+--------------------------------------------------------------------- */
+function openNewsModal(item) {
+  const imgEl = document.getElementById("modalImage");
+  if (item.image) {
+    imgEl.src = item.image;
+    imgEl.style.display = "block";
+  } else {
+    imgEl.style.display = "none";
+  }
+
+  document.getElementById("modalTags").innerHTML =
+    (item.tags || []).map((t) => `<span class="news-tag">${escapeHTML(t)}</span>`).join("");
+  document.getElementById("modalDate").textContent = item.date || "";
+  document.getElementById("modalTitle").textContent = item.title || "";
+  document.getElementById("modalBody").textContent = item.body || "";
+
+  document.getElementById("newsModal").classList.add("is-open");
+}
+
+function closeNewsModal() {
+  document.getElementById("newsModal").classList.remove("is-open");
+}
+
+/* ---------------------------------------------------------------------
+   投票締切カウントダウンの初期化
+   ---------------------------------------------------------------------
+   ・phase-3 かつ SITE_CONFIG.countdown.enabled = true のときのみ動作します
+   ・残り10分〜6秒  : 小さめの数字を常時表示
+   ・残り5秒〜0秒   : 大きく拡大表示
+   ・0秒到達後      : 「投票が締め切られました」を表示
+   ・当選確実フラグがONなら、続けて「当選確実」と候補者名を表示
+--------------------------------------------------------------------- */
+function initCountdown() {
+  const overlay = document.getElementById("countdownOverlay");
+  const content = document.getElementById("countdownContent");
+  const cfg = SITE_CONFIG.countdown;
+
+  // phase-3以外、またはカウントダウンが無効な場合は何もしない
+  if (getCurrentPhase() !== "3" || !cfg.enabled) {
+    overlay.classList.remove("is-visible");
+    return;
+  }
+
+  const deadlineTime = new Date(cfg.deadline).getTime();
+  if (isNaN(deadlineTime)) {
+    console.warn("SITE_CONFIG.countdown.deadline の日時形式が正しくありません:", cfg.deadline);
+    return;
+  }
+
+  let timerId = null;
+
+  function tick() {
+    const diff = deadlineTime - Date.now(); // 残りミリ秒
+
+    // 残り10分より前：オーバーレイは表示しない
+    if (diff > 10 * 60 * 1000) {
+      overlay.classList.remove("is-visible");
+      return;
+    }
+
+    overlay.classList.add("is-visible");
+
+    if (diff > 5000) {
+      // ----- 残り10分〜6秒：やや小さめの数字を常時表示 -----
+      const totalSec = Math.ceil(diff / 1000);
+      const min = Math.floor(totalSec / 60);
+      const sec = totalSec % 60;
+      content.innerHTML = `
+        <div class="countdown-small-label">投票締切まで</div>
+        <div class="countdown-small-time">${min}:${String(sec).padStart(2, "0")}</div>
+      `;
+    } else if (diff > 0) {
+      // ----- 残り5秒〜0秒：大きく拡大表示 -----
+      const sec = Math.ceil(diff / 1000);
+      content.innerHTML = `<div class="countdown-large-time">${sec}</div>`;
+    } else {
+      // ----- 0秒到達後：締切メッセージ（＋当選確実表示） -----
+      let html = `<div class="countdown-end-text">投票が締め切られました</div>`;
+
+      if (cfg.showCertainAnnouncement) {
+        html += `
+          <div class="countdown-certain-label">当選確実</div>
+          <div class="countdown-certain-name">${escapeHTML(cfg.certainName)}</div>
+          <div class="countdown-certain-district">${escapeHTML(cfg.certainDistrict)}</div>
+        `;
+      }
+
+      html += `<button class="countdown-close-btn" id="countdownCloseBtn">閉じる</button>`;
+      content.innerHTML = html;
+
+      document.getElementById("countdownCloseBtn").addEventListener("click", () => {
+        overlay.classList.remove("is-visible");
+      });
+
+      // 締切後は更新不要なのでタイマー停止
+      if (timerId) clearInterval(timerId);
+    }
+  }
+
+  tick();
+  timerId = setInterval(tick, 250);
+}
+
+/* ---------------------------------------------------------------------
+   初期化処理
+--------------------------------------------------------------------- */
+document.addEventListener("DOMContentLoaded", () => {
+  updatePhaseBadge();
+  initTicker();
+  renderDistricts();
+  renderNews();
+  initCountdown();
+
+  // モーダルを閉じる処理
+  document.getElementById("modalClose").addEventListener("click", closeNewsModal);
+  document.getElementById("newsModal").addEventListener("click", (e) => {
+    if (e.target.id === "newsModal") closeNewsModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeNewsModal();
+  });
+});
+</script>
+</body>
+</html>

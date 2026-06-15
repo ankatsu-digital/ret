@@ -1,0 +1,1259 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>選挙サイト 管理画面</title>
+
+<!-- =====================================================================
+     【管理画面について】
+     ・Firebase Firestoreにデータを保存・読み込みする管理画面です。
+     ・Googleアカウントでのログイン認証が必須です。
+     ・初回ログイン後、Firebaseコンソールで該当メールを管理者として
+       設定してください（Firestore Security Rules を参照）。
+
+     【Firestore のデータ構造】
+       senkyo/config        → SITE_CONFIG（カウントダウン等の設定）
+       senkyo/phase         → 現在のフェーズ（"1"/"2"/"3"）
+       senkyo/ticker        → 速報ティッカー（配列）
+       senkyo/districts     → ELECTION_DATA（選挙区・候補者）
+       senkyo/news          → NEWS_DATA（フェーズ別ニュース）
+
+     【使い方】
+     1. このファイルをFirebase HostingやローカルのWebサーバで開く
+     2. Googleアカウントでログイン
+     3. 各タブで候補者・ニュース・設定を編集して「保存」
+     4. 「コード出力」タブで index.html に貼り付けるデータを生成できます
+===================================================================== -->
+
+<!-- Firebase SDK（v10 モジュール形式） -->
+<script type="module">
+/* =====================================================================
+   ▼▼▼ Firebase 設定（ここを自分のプロジェクトの設定に書き換えてください） ▼▼▼
+===================================================================== */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-analytics.js";
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import {
+  getFirestore,
+  doc,
+  getDoc,
+  setDoc,
+  onSnapshot
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+/* ---- Firebaseプロジェクトの設定（自分のプロジェクトに合わせて変更） ---- */
+const firebaseConfig = {
+  apiKey:            "AIzaSyDarChAwm9_4t4CRfPiM5dVI84MjQPe5ms",
+  authDomain:        "senkyo-29a84.firebaseapp.com",
+  projectId:         "senkyo-29a84",
+  storageBucket:     "senkyo-29a84.firebasestorage.app",
+  messagingSenderId: "734912107336",
+  appId:             "1:734912107336:web:b57350fc64038f7611997d",
+  measurementId:     "G-T8ZNQSTH0K"
+};
+
+/* =====================================================================
+   ▼▼▼ 管理者メールアドレスのホワイトリスト ▼▼▼
+   ここに追加したメールアドレスのみ管理画面を使用できます。
+===================================================================== */
+const ADMIN_EMAILS = [
+  // 例: "your-email@example.com",
+  // "another-admin@example.com"
+];
+
+/* ---- Firebase 初期化 ---- */
+const app  = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db   = getFirestore(app);
+/* analyticsはオプション（必要なければ削除してもOK） */
+let analytics;
+try { analytics = getAnalytics(app); } catch(e) { /* ブラウザ環境によっては不要 */ }
+
+/* =====================================================================
+   Firestore のドキュメントパス定数
+   （index.html 側でどのパスを読むかに合わせて変更してください）
+===================================================================== */
+const PATHS = {
+  config:    "senkyo/config",      // カウントダウン・速度などの全体設定
+  phase:     "senkyo/phase",       // 現在のフェーズ
+  ticker:    "senkyo/ticker",      // 速報ティッカー文言
+  districts: "senkyo/districts",  // 選挙区・候補者データ
+  news:      "senkyo/news"         // フェーズ別ニュースデータ
+};
+
+/* =====================================================================
+   デフォルトデータ（Firestoreにデータがない場合に使用）
+===================================================================== */
+const DEFAULT_DATA = {
+  phase: { value: "3" },
+
+  config: {
+    countdown: {
+      enabled: true,
+      deadline: "2026-10-25T20:00:00+09:00",
+      showCertainAnnouncement: true,
+      certainName: "山田 太郎",
+      certainDistrict: "東京都第1選挙区"
+    },
+    tickerSpeedSec: 22
+  },
+
+  ticker: {
+    items: [
+      "午後8時、投票が締め切られました",
+      "東京都第1選挙区　山田太郎氏（民主改新党）に当選確実",
+      "東京都第2選挙区　高橋誠氏（平和改革連合）の当選が確定",
+      "投票率は前回を上回る見通し"
+    ]
+  },
+
+  districts: {
+    data: [
+      {
+        name: "東京都第1選挙区",
+        meta: "改選数 1　／　投票率 55.32%（前回比 +2.1pt）",
+        candidates: [
+          {
+            name: "山田 太郎", furigana: "やまだ たろう",
+            party: "民主改新党", age: 52, status: "現職",
+            votes: 128543, voteRate: 48.3, resultStatus: "certain",
+            career: "1998年〇〇大学法学部卒業。市議会議員を2期務めたのち、2012年衆議院議員初当選。",
+            pledges: ["子育て・教育支援の拡充","地域医療体制の強化","中小企業への支援強化と賃上げ環境の整備"],
+            comment: "皆様からの温かいご支援に心より感謝申し上げます。"
+          },
+          {
+            name: "鈴木 花子", furigana: "すずき はなこ",
+            party: "国民未来党", age: 45, status: "新人",
+            votes: 98214, voteRate: 36.9, resultStatus: "lost",
+            career: "〇〇新聞記者として15年間取材活動に従事。2025年、政界転身を表明し新人候補として出馬。",
+            pledges: ["教育費の無償化拡大","女性管理職比率の向上","行政手続きのデジタル化推進"],
+            comment: "結果は残念ですが、選挙戦でいただいた多くのご意見は今後の地域活動に必ず生かしてまいります。"
+          }
+        ]
+      }
+    ]
+  },
+
+  news: {
+    phase1: [
+      { id:"p1-1", title:"立候補予定者説明会が開催されました", date:"2026年10月1日 10:00",
+        tags:["告示前","選挙準備"], image:"https://picsum.photos/seed/election101/640/360",
+        body:"選挙管理委員会は10月1日、立候補予定者を対象とした説明会を開催しました。" }
+    ],
+    phase2: [
+      { id:"p2-1", title:"選挙戦がスタート、各陣営が第一声", date:"2026年10月10日 08:30",
+        tags:["選挙運動","第一声"], image:"https://picsum.photos/seed/election201/640/360",
+        body:"選挙が告示され、立候補者は各地で第一声を上げました。" }
+    ],
+    phase3: [
+      { id:"p3-1", title:"投票が締め切られました", date:"2026年10月25日 20:00",
+        tags:["速報","開票"], image:"https://picsum.photos/seed/election301/640/360",
+        body:"10月25日午後8時、各投票所で投票が締め切られました。" }
+    ]
+  }
+};
+
+/* =====================================================================
+   グローバル状態
+===================================================================== */
+let currentUser = null;      // ログイン中のユーザー
+let currentData = {};        // Firestoreから読み込んだデータのキャッシュ
+let activeTab   = "phase";   // 現在アクティブなタブ
+
+/* =====================================================================
+   ユーティリティ
+===================================================================== */
+/* 通知トーストを表示 */
+function toast(msg, type = "success") {
+  const t = document.createElement("div");
+  t.className = "toast toast--" + type;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.classList.add("is-show"), 50);
+  setTimeout(() => { t.classList.remove("is-show"); setTimeout(() => t.remove(), 400); }, 3000);
+}
+
+/* HTMLエスケープ */
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+/* Firestoreから全ドキュメントを読み込む */
+async function loadAll() {
+  showLoader(true);
+  try {
+    for (const [key, path] of Object.entries(PATHS)) {
+      const snap = await getDoc(doc(db, ...path.split("/")));
+      currentData[key] = snap.exists() ? snap.data() : DEFAULT_DATA[key];
+    }
+    renderActiveTab();
+  } catch(e) {
+    toast("データの読み込みに失敗しました: " + e.message, "error");
+  } finally {
+    showLoader(false);
+  }
+}
+
+/* ローディング表示の切替 */
+function showLoader(show) {
+  document.getElementById("loader").style.display = show ? "flex" : "none";
+}
+
+/* =====================================================================
+   認証
+===================================================================== */
+function setupAuth() {
+  onAuthStateChanged(auth, (user) => {
+    if (user) {
+      /* ---- ホワイトリストチェック（空の場合はスキップ） ---- */
+      if (ADMIN_EMAILS.length > 0 && !ADMIN_EMAILS.includes(user.email)) {
+        signOut(auth);
+        showAuthError("このメールアドレスには管理者権限がありません。");
+        return;
+      }
+      currentUser = user;
+      document.getElementById("loginScreen").style.display  = "none";
+      document.getElementById("adminApp").style.display     = "block";
+      document.getElementById("userEmail").textContent      = user.email;
+      loadAll();
+    } else {
+      currentUser = null;
+      document.getElementById("loginScreen").style.display  = "flex";
+      document.getElementById("adminApp").style.display     = "none";
+    }
+  });
+}
+
+function showAuthError(msg) {
+  const el = document.getElementById("authError");
+  el.textContent = msg;
+  el.style.display = "block";
+}
+
+/* Googleログインボタン */
+window.loginWithGoogle = async function() {
+  const provider = new GoogleAuthProvider();
+  try {
+    await signInWithPopup(auth, provider);
+  } catch(e) {
+    showAuthError("ログインに失敗しました: " + e.message);
+  }
+};
+
+/* ログアウトボタン */
+window.logout = async function() {
+  await signOut(auth);
+  toast("ログアウトしました");
+};
+
+/* =====================================================================
+   タブ切替
+===================================================================== */
+window.switchTab = function(tab) {
+  activeTab = tab;
+  document.querySelectorAll(".tab-btn").forEach(b => {
+    b.classList.toggle("is-active", b.dataset.tab === tab);
+  });
+  renderActiveTab();
+};
+
+function renderActiveTab() {
+  const pane = document.getElementById("tabContent");
+  switch(activeTab) {
+    case "phase":     pane.innerHTML = renderPhaseTab();     break;
+    case "ticker":    pane.innerHTML = renderTickerTab();    break;
+    case "config":    pane.innerHTML = renderConfigTab();    break;
+    case "districts": pane.innerHTML = renderDistrictsTab(); break;
+    case "news":      pane.innerHTML = renderNewsTab();      break;
+    case "export":    pane.innerHTML = renderExportTab();    break;
+  }
+}
+
+/* =====================================================================
+   タブ1：フェーズ切替
+===================================================================== */
+function renderPhaseTab() {
+  const current = currentData.phase?.value ?? "3";
+  const phases = [
+    { v:"1", label:"フェーズ1：告示前",          desc:"票数・当落バッジを非表示。候補者紹介のみ表示されます。", color:"#8a8a8a" },
+    { v:"2", label:"フェーズ2：選挙運動期間中",  desc:"告示後。票数・当落バッジは引き続き非表示です。",       color:"#2d6cdf" },
+    { v:"3", label:"フェーズ3：投票日・開票中",  desc:"得票数・得票率・当確/当選/落選バッジを全て表示します。", color:"#c8102e" }
+  ];
+  return `
+    <div class="tab-pane">
+      <h2 class="pane-title">📡 現在のフェーズ</h2>
+      <p class="pane-desc">選択したフェーズに応じてサイト全体の表示が切り替わります。</p>
+      <div class="phase-cards">
+        ${phases.map(p => `
+          <label class="phase-card ${current === p.v ? "is-selected" : ""}" style="--accent:${p.color}">
+            <input type="radio" name="phase" value="${p.v}" ${current===p.v?"checked":""} onchange="savePhase(this.value)">
+            <span class="phase-card__label">${esc(p.label)}</span>
+            <span class="phase-card__desc">${esc(p.desc)}</span>
+          </label>
+        `).join("")}
+      </div>
+      <p class="pane-hint">※ 選択するとすぐにFirestoreに保存されます。</p>
+    </div>
+  `;
+}
+
+window.savePhase = async function(val) {
+  try {
+    await setDoc(doc(db, "senkyo", "phase"), { value: val });
+    currentData.phase = { value: val };
+    toast("フェーズを「" + {1:"告示前",2:"選挙運動期間中",3:"投票日・開票中"}[val] + "」に変更しました");
+    renderActiveTab();
+  } catch(e) {
+    toast("保存に失敗しました: " + e.message, "error");
+  }
+};
+
+/* =====================================================================
+   タブ2：速報ティッカー
+===================================================================== */
+function renderTickerTab() {
+  const items = currentData.ticker?.items ?? [];
+  return `
+    <div class="tab-pane">
+      <h2 class="pane-title">📢 速報ティッカー</h2>
+      <p class="pane-desc">黒帯に流れるテキストを編集します。1行＝1項目です。</p>
+      <div class="field-group">
+        <label class="field-label">ティッカー文言（1行1項目）</label>
+        <textarea id="tickerText" class="field-textarea" rows="8" placeholder="1行に1件ずつ入力してください">${items.map(esc).join("\n")}</textarea>
+      </div>
+      <button class="btn btn--primary" onclick="saveTicker()">💾 保存する</button>
+    </div>
+  `;
+}
+
+window.saveTicker = async function() {
+  const raw   = document.getElementById("tickerText").value;
+  const items = raw.split("\n").map(s => s.trim()).filter(Boolean);
+  try {
+    await setDoc(doc(db, "senkyo", "ticker"), { items });
+    currentData.ticker = { items };
+    toast("ティッカーを保存しました（" + items.length + "件）");
+  } catch(e) {
+    toast("保存に失敗しました: " + e.message, "error");
+  }
+};
+
+/* =====================================================================
+   タブ3：全体設定（カウントダウン等）
+===================================================================== */
+function renderConfigTab() {
+  const cfg = currentData.config ?? DEFAULT_DATA.config;
+  const cd  = cfg.countdown ?? {};
+  return `
+    <div class="tab-pane">
+      <h2 class="pane-title">⚙️ サイト全体設定</h2>
+
+      <section class="settings-section">
+        <h3 class="settings-section-title">投票締切カウントダウン</h3>
+
+        <div class="field-group">
+          <label class="field-label">カウントダウン表示</label>
+          <label class="toggle-label">
+            <input type="checkbox" id="cdEnabled" ${cd.enabled?"checked":""}>
+            <span class="toggle-slider"></span>
+            有効にする（phase-3 のときのみ動作します）
+          </label>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">投票締切日時（ISO8601形式）</label>
+          <input type="text" id="cdDeadline" class="field-input"
+            value="${esc(cd.deadline ?? "")}"
+            placeholder="例: 2026-10-25T20:00:00+09:00">
+          <span class="field-hint">末尾の +09:00 は日本時間（JST）を意味します。</span>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">締切後に「当選確実」発表を表示する</label>
+          <label class="toggle-label">
+            <input type="checkbox" id="cdShowCertain" ${cd.showCertainAnnouncement?"checked":""}>
+            <span class="toggle-slider"></span>
+            当選確実発表を表示する
+          </label>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">当選確実 候補者氏名</label>
+          <input type="text" id="cdCertainName" class="field-input"
+            value="${esc(cd.certainName ?? "")}" placeholder="例: 山田 太郎">
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">当選確実 選挙区名</label>
+          <input type="text" id="cdCertainDistrict" class="field-input"
+            value="${esc(cd.certainDistrict ?? "")}" placeholder="例: 東京都第1選挙区">
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3 class="settings-section-title">速報ティッカー速度</h3>
+        <div class="field-group">
+          <label class="field-label">1周するのにかかる秒数：<span id="speedLabel">${cfg.tickerSpeedSec ?? 22}</span>秒</label>
+          <input type="range" id="tickerSpeed" min="8" max="60" step="1"
+            value="${cfg.tickerSpeedSec ?? 22}"
+            oninput="document.getElementById('speedLabel').textContent=this.value"
+            class="field-range">
+          <span class="field-hint">小さい値ほど速く流れます（推奨：18〜30秒）</span>
+        </div>
+      </section>
+
+      <button class="btn btn--primary" onclick="saveConfig()">💾 設定を保存する</button>
+    </div>
+  `;
+}
+
+window.saveConfig = async function() {
+  const config = {
+    countdown: {
+      enabled:                 document.getElementById("cdEnabled").checked,
+      deadline:                document.getElementById("cdDeadline").value.trim(),
+      showCertainAnnouncement: document.getElementById("cdShowCertain").checked,
+      certainName:             document.getElementById("cdCertainName").value.trim(),
+      certainDistrict:         document.getElementById("cdCertainDistrict").value.trim()
+    },
+    tickerSpeedSec: Number(document.getElementById("tickerSpeed").value)
+  };
+  try {
+    await setDoc(doc(db, "senkyo", "config"), config);
+    currentData.config = config;
+    toast("設定を保存しました");
+  } catch(e) {
+    toast("保存に失敗しました: " + e.message, "error");
+  }
+};
+
+/* =====================================================================
+   タブ4：選挙区・候補者
+===================================================================== */
+function renderDistrictsTab() {
+  const districts = currentData.districts?.data ?? [];
+  return `
+    <div class="tab-pane">
+      <h2 class="pane-title">🗳️ 選挙区・候補者</h2>
+      <p class="pane-desc">選挙区ごとに候補者情報を編集します。</p>
+
+      <div id="districtsEditor">
+        ${districts.map((d, di) => renderDistrictCard(d, di)).join("")}
+      </div>
+
+      <button class="btn btn--secondary" onclick="addDistrict()">＋ 選挙区を追加</button>
+
+      <div style="margin-top:24px;">
+        <button class="btn btn--primary" onclick="saveDistricts()">💾 候補者データを保存</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderDistrictCard(d, di) {
+  return `
+    <div class="district-card" id="district-${di}">
+      <div class="district-header">
+        <h3 class="district-card-title">選挙区 ${di + 1}</h3>
+        <button class="btn btn--danger btn--sm" onclick="removeDistrict(${di})">削除</button>
+      </div>
+      <div class="field-group">
+        <label class="field-label">選挙区名</label>
+        <input type="text" class="field-input" data-di="${di}" data-f="name"
+          value="${esc(d.name)}" placeholder="例: 東京都第1選挙区">
+      </div>
+      <div class="field-group">
+        <label class="field-label">補足情報（改選数・投票率など）</label>
+        <input type="text" class="field-input" data-di="${di}" data-f="meta"
+          value="${esc(d.meta)}" placeholder="例: 改選数 1　／　投票率 55.32%">
+      </div>
+
+      <div class="candidates-area">
+        <h4 class="candidates-heading">候補者一覧</h4>
+        <div id="candidates-${di}">
+          ${(d.candidates || []).map((c, ci) => renderCandidateCard(c, di, ci)).join("")}
+        </div>
+        <button class="btn btn--secondary btn--sm" onclick="addCandidate(${di})">＋ 候補者を追加</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderCandidateCard(c, di, ci) {
+  const statusOptions = ["現職","新人","元職"];
+  const resultOptions = [
+    { v:"",        label:"未確定（空欄）" },
+    { v:"certain", label:"当確（当選確実）" },
+    { v:"elected", label:"当選（確定）" },
+    { v:"lost",    label:"落選" }
+  ];
+  return `
+    <div class="candidate-card" id="candidate-${di}-${ci}">
+      <div class="candidate-card-header">
+        <strong>候補者 ${ci + 1}</strong>
+        <button class="btn btn--danger btn--sm" onclick="removeCandidate(${di},${ci})">削除</button>
+      </div>
+      <div class="candidate-grid">
+        <div class="field-group">
+          <label class="field-label">氏名</label>
+          <input type="text" class="field-input" data-di="${di}" data-ci="${ci}" data-f="name"
+            value="${esc(c.name)}" placeholder="山田 太郎">
+        </div>
+        <div class="field-group">
+          <label class="field-label">ふりがな</label>
+          <input type="text" class="field-input" data-di="${di}" data-ci="${ci}" data-f="furigana"
+            value="${esc(c.furigana)}" placeholder="やまだ たろう">
+        </div>
+        <div class="field-group">
+          <label class="field-label">党派</label>
+          <input type="text" class="field-input" data-di="${di}" data-ci="${ci}" data-f="party"
+            value="${esc(c.party)}" placeholder="民主改新党">
+        </div>
+        <div class="field-group">
+          <label class="field-label">年齢</label>
+          <input type="number" class="field-input" data-di="${di}" data-ci="${ci}" data-f="age"
+            value="${esc(c.age)}" placeholder="52" min="0" max="120">
+        </div>
+        <div class="field-group">
+          <label class="field-label">属性</label>
+          <select class="field-select" data-di="${di}" data-ci="${ci}" data-f="status">
+            ${statusOptions.map(s => `<option ${c.status===s?"selected":""}>${esc(s)}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label">当落ステータス</label>
+          <select class="field-select" data-di="${di}" data-ci="${ci}" data-f="resultStatus">
+            ${resultOptions.map(o => `<option value="${o.v}" ${c.resultStatus===o.v?"selected":""}>${esc(o.label)}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label">得票数</label>
+          <input type="number" class="field-input" data-di="${di}" data-ci="${ci}" data-f="votes"
+            value="${esc(c.votes)}" placeholder="128543" min="0">
+        </div>
+        <div class="field-group">
+          <label class="field-label">得票率（%）</label>
+          <input type="number" class="field-input" data-di="${di}" data-ci="${ci}" data-f="voteRate"
+            value="${esc(c.voteRate)}" placeholder="48.3" step="0.1" min="0" max="100">
+        </div>
+      </div>
+      <div class="field-group">
+        <label class="field-label">経歴</label>
+        <textarea class="field-textarea" rows="3" data-di="${di}" data-ci="${ci}" data-f="career"
+          placeholder="経歴を入力">${esc(c.career)}</textarea>
+      </div>
+      <div class="field-group">
+        <label class="field-label">公約（1行1項目）</label>
+        <textarea class="field-textarea" rows="3" data-di="${di}" data-ci="${ci}" data-f="pledges"
+          placeholder="公約1&#10;公約2&#10;公約3">${(c.pledges||[]).map(esc).join("\n")}</textarea>
+      </div>
+      <div class="field-group">
+        <label class="field-label">本人コメント</label>
+        <textarea class="field-textarea" rows="2" data-di="${di}" data-ci="${ci}" data-f="comment"
+          placeholder="本人コメント">${esc(c.comment)}</textarea>
+      </div>
+    </div>
+  `;
+}
+
+/* 選挙区を追加 */
+window.addDistrict = function() {
+  if (!currentData.districts) currentData.districts = { data: [] };
+  currentData.districts.data.push({ name:"新しい選挙区", meta:"", candidates:[] });
+  renderActiveTab();
+};
+
+/* 選挙区を削除 */
+window.removeDistrict = function(di) {
+  if (!confirm("この選挙区を削除しますか？")) return;
+  currentData.districts.data.splice(di, 1);
+  renderActiveTab();
+};
+
+/* 候補者を追加 */
+window.addCandidate = function(di) {
+  currentData.districts.data[di].candidates.push({
+    name:"", furigana:"", party:"", age:0, status:"新人",
+    votes:0, voteRate:0, resultStatus:"",
+    career:"", pledges:[], comment:""
+  });
+  renderActiveTab();
+};
+
+/* 候補者を削除 */
+window.removeCandidate = function(di, ci) {
+  if (!confirm("この候補者を削除しますか？")) return;
+  currentData.districts.data[di].candidates.splice(ci, 1);
+  renderActiveTab();
+};
+
+/* フォームからデータを収集してFirestoreに保存 */
+window.saveDistricts = async function() {
+  /* 現在のフォーム値をcurrentDataに反映 */
+  document.querySelectorAll("[data-f]").forEach(el => {
+    const di = el.dataset.di !== undefined ? Number(el.dataset.di) : null;
+    const ci = el.dataset.ci !== undefined ? Number(el.dataset.ci) : null;
+    const f  = el.dataset.f;
+    if (di === null) return;
+
+    const d = currentData.districts.data[di];
+    if (ci === null) {
+      /* 選挙区フィールド */
+      d[f] = el.value;
+    } else {
+      /* 候補者フィールド */
+      const c = d.candidates[ci];
+      if (f === "pledges") {
+        c[f] = el.value.split("\n").map(s=>s.trim()).filter(Boolean);
+      } else if (f === "age" || f === "votes") {
+        c[f] = Number(el.value) || 0;
+      } else if (f === "voteRate") {
+        c[f] = parseFloat(el.value) || 0;
+      } else {
+        c[f] = el.value;
+      }
+    }
+  });
+
+  try {
+    await setDoc(doc(db, "senkyo", "districts"), currentData.districts);
+    toast("候補者データを保存しました");
+  } catch(e) {
+    toast("保存に失敗しました: " + e.message, "error");
+  }
+};
+
+/* =====================================================================
+   タブ5：選挙関連ニュース
+===================================================================== */
+function renderNewsTab() {
+  const news = currentData.news ?? DEFAULT_DATA.news;
+  const tabs = [
+    { key:"phase1", label:"フェーズ1（告示前）" },
+    { key:"phase2", label:"フェーズ2（選挙運動期間）" },
+    { key:"phase3", label:"フェーズ3（投票日・開票）" }
+  ];
+  const activeNewsPhase = window._newsPhase ?? "phase1";
+
+  return `
+    <div class="tab-pane">
+      <h2 class="pane-title">📰 選挙関連ニュース</h2>
+      <div class="news-phase-tabs">
+        ${tabs.map(t => `
+          <button class="news-phase-tab ${activeNewsPhase===t.key?"is-active":""}"
+            onclick="switchNewsPhase('${t.key}')">${esc(t.label)}</button>
+        `).join("")}
+      </div>
+      ${tabs.map(t => `
+        <div class="news-phase-pane" style="${activeNewsPhase===t.key?"":"display:none"}">
+          <div id="newsEditor-${t.key}">
+            ${(news[t.key]||[]).map((n,ni) => renderNewsCard(n,t.key,ni)).join("")}
+          </div>
+          <button class="btn btn--secondary" onclick="addNews('${t.key}')">＋ ニュースを追加</button>
+        </div>
+      `).join("")}
+      <div style="margin-top:24px;">
+        <button class="btn btn--primary" onclick="saveNews()">💾 ニュースデータを保存</button>
+      </div>
+    </div>
+  `;
+}
+
+window.switchNewsPhase = function(phase) {
+  window._newsPhase = phase;
+  renderActiveTab();
+};
+
+function renderNewsCard(n, phase, ni) {
+  return `
+    <div class="news-edit-card" id="news-${phase}-${ni}">
+      <div class="news-card-header">
+        <strong>ニュース ${ni + 1}</strong>
+        <button class="btn btn--danger btn--sm" onclick="removeNews('${phase}',${ni})">削除</button>
+      </div>
+      <div class="field-group">
+        <label class="field-label">見出し</label>
+        <input type="text" class="field-input" data-nphase="${phase}" data-ni="${ni}" data-f="title"
+          value="${esc(n.title)}" placeholder="ニュースの見出し">
+      </div>
+      <div class="field-group">
+        <label class="field-label">日時</label>
+        <input type="text" class="field-input" data-nphase="${phase}" data-ni="${ni}" data-f="date"
+          value="${esc(n.date)}" placeholder="2026年10月1日 10:00">
+      </div>
+      <div class="field-group">
+        <label class="field-label">タグ（カンマ区切り）</label>
+        <input type="text" class="field-input" data-nphase="${phase}" data-ni="${ni}" data-f="tags"
+          value="${esc((n.tags||[]).join(","))}" placeholder="速報,当確">
+      </div>
+      <div class="field-group">
+        <label class="field-label">画像URL（任意）</label>
+        <input type="text" class="field-input" data-nphase="${phase}" data-ni="${ni}" data-f="image"
+          value="${esc(n.image)}" placeholder="https://...">
+      </div>
+      <div class="field-group">
+        <label class="field-label">本文</label>
+        <textarea class="field-textarea" rows="4" data-nphase="${phase}" data-ni="${ni}" data-f="body"
+          placeholder="ニュースの本文">${esc(n.body)}</textarea>
+      </div>
+    </div>
+  `;
+}
+
+window.addNews = function(phase) {
+  if (!currentData.news) currentData.news = { phase1:[], phase2:[], phase3:[] };
+  const id = phase + "-" + Date.now();
+  currentData.news[phase].push({ id, title:"", date:"", tags:[], image:"", body:"" });
+  renderActiveTab();
+};
+
+window.removeNews = function(phase, ni) {
+  if (!confirm("このニュースを削除しますか？")) return;
+  currentData.news[phase].splice(ni, 1);
+  renderActiveTab();
+};
+
+window.saveNews = async function() {
+  /* フォームからニュースデータを収集 */
+  document.querySelectorAll("[data-nphase]").forEach(el => {
+    const phase = el.dataset.nphase;
+    const ni    = Number(el.dataset.ni);
+    const f     = el.dataset.f;
+    if (!currentData.news?.[phase]?.[ni]) return;
+    const n = currentData.news[phase][ni];
+    if (f === "tags") {
+      n[f] = el.value.split(",").map(s=>s.trim()).filter(Boolean);
+    } else {
+      n[f] = el.value;
+    }
+  });
+
+  try {
+    await setDoc(doc(db, "senkyo", "news"), currentData.news);
+    toast("ニュースデータを保存しました");
+  } catch(e) {
+    toast("保存に失敗しました: " + e.message, "error");
+  }
+};
+
+/* =====================================================================
+   タブ6：コード出力（index.html に貼り付け用）
+===================================================================== */
+function renderExportTab() {
+  return `
+    <div class="tab-pane">
+      <h2 class="pane-title">📋 コード出力</h2>
+      <p class="pane-desc">
+        Firestoreのデータをindex.htmlに直接貼り付けるためのJSコードを生成します。<br>
+        Firestoreが使えない環境でも、このコードをコピーして index.html の対応する変数部分に貼り付けることで反映できます。
+      </p>
+      <div class="export-buttons">
+        <button class="btn btn--secondary" onclick="exportCode('config')">⚙️ SITE_CONFIG</button>
+        <button class="btn btn--secondary" onclick="exportCode('districts')">🗳️ ELECTION_DATA</button>
+        <button class="btn btn--secondary" onclick="exportCode('news')">📰 NEWS_DATA</button>
+        <button class="btn btn--secondary" onclick="exportCode('ticker')">📢 TICKER_ITEMS</button>
+        <button class="btn btn--primary"   onclick="exportCode('all')">📦 すべて出力</button>
+      </div>
+      <div class="field-group" style="margin-top:16px;">
+        <label class="field-label">出力コード</label>
+        <textarea id="exportOutput" class="field-textarea export-output" rows="20" readonly
+          placeholder="上のボタンをクリックするとここにコードが表示されます"></textarea>
+      </div>
+      <button class="btn btn--secondary" onclick="copyExport()">📋 クリップボードにコピー</button>
+    </div>
+  `;
+}
+
+window.exportCode = function(type) {
+  const d = currentData;
+  let out = "";
+
+  if (type === "config" || type === "all") {
+    const c = d.config ?? DEFAULT_DATA.config;
+    out += `/* ===== SITE_CONFIG ===== */\nconst SITE_CONFIG = ${JSON.stringify(c, null, 2)};\n\n`;
+  }
+  if (type === "districts" || type === "all") {
+    const data = d.districts?.data ?? [];
+    out += `/* ===== ELECTION_DATA ===== */\nconst ELECTION_DATA = ${JSON.stringify(data, null, 2)};\n\n`;
+  }
+  if (type === "news" || type === "all") {
+    const n = d.news ?? DEFAULT_DATA.news;
+    out += `/* ===== NEWS_DATA ===== */\nconst NEWS_DATA = ${JSON.stringify(n, null, 2)};\n\n`;
+  }
+  if (type === "ticker" || type === "all") {
+    const items = d.ticker?.items ?? [];
+    out += `/* ===== TICKER_ITEMS ===== */\nconst TICKER_ITEMS = ${JSON.stringify(items, null, 2)};\n\n`;
+  }
+
+  document.getElementById("exportOutput").value = out.trim();
+  toast("コードを生成しました。クリップボードにコピーして index.html に貼り付けてください。");
+};
+
+window.copyExport = function() {
+  const el = document.getElementById("exportOutput");
+  navigator.clipboard.writeText(el.value).then(() => {
+    toast("コピーしました！");
+  }).catch(() => {
+    el.select();
+    document.execCommand("copy");
+    toast("コピーしました！");
+  });
+};
+
+/* =====================================================================
+   初期化
+===================================================================== */
+setupAuth();
+</script>
+
+<style>
+/* =====================================================================
+   ▼▼▼ 管理画面のスタイル ▼▼▼
+===================================================================== */
+:root {
+  --primary:      #c8102e;
+  --primary-d:    #9e0c22;
+  --primary-bg:   #fdecef;
+  --bg:           #f4f5f7;
+  --surface:      #ffffff;
+  --border:       #e3e3e3;
+  --text:         #1a1a1a;
+  --text-sub:     #767676;
+  --success:      #1a7f4e;
+  --error:        #c8102e;
+  --blue:         #2d6cdf;
+  --font: "Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic","Meiryo",sans-serif;
+  --radius-m: 8px;
+  --radius-l: 12px;
+  --shadow:   0 2px 12px rgba(0,0,0,0.08);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+/* ---- ローディング ---- */
+#loader {
+  position: fixed; inset: 0;
+  background: rgba(255,255,255,0.85);
+  display: none;
+  align-items: center; justify-content: center;
+  z-index: 9999;
+  font-size: 1.1rem; font-weight: 700; color: var(--primary);
+  flex-direction: column; gap: 12px;
+}
+.loader-spin {
+  width: 36px; height: 36px;
+  border: 4px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- ログイン画面 ---- */
+#loginScreen {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; padding: 16px;
+}
+.login-card {
+  background: var(--surface);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow);
+  padding: 48px 40px;
+  text-align: center;
+  max-width: 400px; width: 100%;
+}
+.login-logo {
+  font-size: 2.5rem; margin-bottom: 8px;
+}
+.login-title {
+  font-size: 1.3rem; font-weight: 700; margin-bottom: 4px;
+}
+.login-sub {
+  font-size: 0.85rem; color: var(--text-sub); margin-bottom: 32px;
+}
+.btn-google {
+  display: inline-flex; align-items: center; gap: 10px;
+  background: #fff; border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 24px;
+  font-size: 0.95rem; font-weight: 600;
+  cursor: pointer; transition: box-shadow 0.15s;
+  width: 100%; justify-content: center;
+}
+.btn-google:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+.btn-google img { width: 20px; height: 20px; }
+#authError {
+  display: none; margin-top: 16px;
+  color: var(--error); font-size: 0.85rem;
+  background: var(--primary-bg); padding: 10px 14px;
+  border-radius: var(--radius-m); border-left: 3px solid var(--error);
+}
+
+/* ---- 管理アプリ全体 ---- */
+#adminApp { display: none; min-height: 100vh; }
+
+/* ---- ヘッダー ---- */
+.admin-header {
+  background: var(--surface);
+  border-bottom: 3px solid var(--primary);
+  padding: 12px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.admin-header-left {
+  display: flex; align-items: center; gap: 12px;
+}
+.admin-logo { font-size: 1.5rem; }
+.admin-title-wrap .title { font-size: 1rem; font-weight: 700; }
+.admin-title-wrap .subtitle { font-size: 0.72rem; color: var(--text-sub); }
+.admin-header-right {
+  display: flex; align-items: center; gap: 12px;
+}
+#userEmail { font-size: 0.8rem; color: var(--text-sub); }
+
+/* ---- サイドバー + コンテンツ ---- */
+.admin-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  min-height: calc(100vh - 57px);
+}
+@media (max-width: 700px) {
+  .admin-layout { grid-template-columns: 1fr; }
+  .admin-sidebar { display: flex; flex-wrap: wrap; border-right: none; border-bottom: 1px solid var(--border); padding: 8px; gap: 4px; }
+  .tab-btn { flex: 1 1 auto; border-radius: var(--radius-m); font-size: 0.75rem; padding: 8px 6px; }
+}
+
+/* ---- サイドバー ---- */
+.admin-sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 16px 0;
+}
+.tab-btn {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 12px 20px;
+  font-family: var(--font); font-size: 0.88rem;
+  text-align: left; cursor: pointer;
+  border: none; background: none;
+  color: var(--text); transition: background 0.12s, color 0.12s;
+  border-left: 3px solid transparent;
+}
+.tab-btn:hover { background: var(--bg); }
+.tab-btn.is-active {
+  background: var(--primary-bg);
+  color: var(--primary); font-weight: 700;
+  border-left-color: var(--primary);
+}
+.sidebar-divider {
+  height: 1px; background: var(--border);
+  margin: 12px 16px;
+}
+
+/* ---- メインコンテンツ ---- */
+.admin-main { padding: 24px; overflow-y: auto; }
+
+/* ---- タブパネル共通 ---- */
+.tab-pane { max-width: 860px; }
+.pane-title {
+  font-size: 1.25rem; font-weight: 700;
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px;
+}
+.pane-desc { font-size: 0.875rem; color: var(--text-sub); margin-bottom: 24px; }
+.pane-hint { font-size: 0.8rem; color: var(--text-sub); margin-top: 12px; }
+
+/* ---- フィールド ---- */
+.field-group { margin-bottom: 16px; }
+.field-label {
+  display: block; font-size: 0.82rem;
+  font-weight: 600; margin-bottom: 5px;
+}
+.field-input, .field-select, .field-textarea {
+  width: 100%; padding: 9px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-m);
+  font-family: var(--font); font-size: 0.9rem;
+  color: var(--text); background: var(--surface);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.field-input:focus, .field-select:focus, .field-textarea:focus {
+  outline: none; border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(200,16,46,0.12);
+}
+.field-textarea { resize: vertical; line-height: 1.6; }
+.field-hint { font-size: 0.78rem; color: var(--text-sub); margin-top: 4px; display: block; }
+.field-range { width: 100%; accent-color: var(--primary); }
+
+/* ---- ボタン ---- */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 10px 20px; border-radius: var(--radius-m);
+  font-family: var(--font); font-size: 0.88rem; font-weight: 600;
+  cursor: pointer; border: none; transition: all 0.15s;
+  white-space: nowrap;
+}
+.btn--primary   { background: var(--primary); color: #fff; }
+.btn--primary:hover { background: var(--primary-d); }
+.btn--secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+.btn--secondary:hover { background: var(--bg); }
+.btn--danger    { background: #fff1f2; color: var(--error); border: 1px solid #fca5a5; }
+.btn--danger:hover { background: var(--primary-bg); }
+.btn--sm        { padding: 5px 12px; font-size: 0.78rem; }
+.btn-logout     { background: none; border: 1px solid var(--border); color: var(--text-sub); padding: 6px 14px; border-radius: 6px; font-size: 0.8rem; cursor: pointer; }
+.btn-logout:hover { background: var(--bg); }
+
+/* ---- トグルスイッチ ---- */
+.toggle-label {
+  display: inline-flex; align-items: center; gap: 10px;
+  cursor: pointer; font-size: 0.88rem;
+}
+.toggle-label input[type=checkbox] { display: none; }
+.toggle-slider {
+  width: 44px; height: 24px; border-radius: 12px;
+  background: var(--border); position: relative; flex-shrink: 0;
+  transition: background 0.2s;
+}
+.toggle-slider::after {
+  content: ""; position: absolute;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; top: 3px; left: 3px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform 0.2s;
+}
+.toggle-label input:checked + .toggle-slider { background: var(--primary); }
+.toggle-label input:checked + .toggle-slider::after { transform: translateX(20px); }
+
+/* ---- フェーズカード ---- */
+.phase-cards { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
+.phase-card {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 16px 20px; border-radius: var(--radius-m);
+  border: 2px solid var(--border); cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  background: var(--surface);
+}
+.phase-card input { display: none; }
+.phase-card:hover { border-color: var(--accent, var(--primary)); }
+.phase-card.is-selected {
+  border-color: var(--accent, var(--primary));
+  background: var(--primary-bg);
+}
+.phase-card__label {
+  font-size: 0.95rem; font-weight: 700;
+  color: var(--accent, var(--primary));
+}
+.phase-card__desc { font-size: 0.82rem; color: var(--text-sub); }
+
+/* ---- 設定セクション ---- */
+.settings-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+.settings-section-title {
+  font-size: 0.95rem; font-weight: 700;
+  margin-bottom: 16px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ---- 選挙区カード ---- */
+.district-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+.district-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 16px; padding-bottom: 12px;
+  border-bottom: 2px solid var(--primary);
+}
+.district-card-title { font-size: 1rem; font-weight: 700; color: var(--primary); }
+
+/* ---- 候補者カード ---- */
+.candidates-area {
+  margin-top: 20px; padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.candidates-heading {
+  font-size: 0.85rem; font-weight: 700;
+  color: var(--text-sub); margin-bottom: 12px;
+}
+.candidate-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  padding: 16px 18px; margin-bottom: 12px;
+}
+.candidate-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px; font-size: 0.85rem;
+}
+.candidate-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+}
+@media (max-width: 600px) { .candidate-grid { grid-template-columns: 1fr; } }
+
+/* ---- ニュース ---- */
+.news-phase-tabs {
+  display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;
+}
+.news-phase-tab {
+  padding: 7px 16px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface);
+  font-family: var(--font); font-size: 0.83rem;
+  cursor: pointer; transition: all 0.15s;
+}
+.news-phase-tab.is-active {
+  background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 700;
+}
+.news-edit-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  padding: 16px 18px; margin-bottom: 12px;
+}
+.news-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px; font-size: 0.85rem;
+}
+
+/* ---- コード出力 ---- */
+.export-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.export-output {
+  font-family: "Courier New", Courier, monospace;
+  font-size: 0.78rem; background: #1e1e1e;
+  color: #d4d4d4; border-color: #333;
+}
+
+/* ---- トースト通知 ---- */
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  background: #1a1a1a; color: #fff;
+  padding: 12px 20px; border-radius: var(--radius-m);
+  font-size: 0.88rem; z-index: 9999;
+  transform: translateY(20px); opacity: 0;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+  max-width: 300px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+}
+.toast.is-show { transform: translateY(0); opacity: 1; }
+.toast--error { background: var(--primary); }
+.toast--success { background: var(--success); }
+</style>
+</head>
+<body>
+
+<!-- =====================================================================
+     ローディングオーバーレイ
+===================================================================== -->
+<div id="loader">
+  <div class="loader-spin"></div>
+  読み込み中...
+</div>
+
+<!-- =====================================================================
+     ログイン画面（未認証時に表示）
+===================================================================== -->
+<div id="loginScreen">
+  <div class="login-card">
+    <div class="login-logo">🗳️</div>
+    <h1 class="login-title">選挙サイト 管理画面</h1>
+    <p class="login-sub">管理者のGoogleアカウントでログインしてください</p>
+    <button class="btn-google" onclick="loginWithGoogle()">
+      <!-- GoogleのSVGアイコン（外部依存なし） -->
+      <svg width="20" height="20" viewBox="0 0 48 48">
+        <path fill="#4285F4" d="M47.5 24.5c0-1.6-.1-3.2-.4-4.7H24v9h13.2c-.6 3-2.4 5.5-5 7.2v6h8c4.7-4.3 7.3-10.6 7.3-17.5z"/>
+        <path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-8-6c-2.1 1.4-4.9 2.3-7.9 2.3-6.1 0-11.3-4.1-13.2-9.6H2.6v6.2C6.5 42.6 14.7 48 24 48z"/>
+        <path fill="#FBBC05" d="M10.8 28.9c-.5-1.4-.8-2.9-.8-4.5s.3-3.1.8-4.5v-6.2H2.6C.9 17.1 0 20.4 0 24s.9 6.9 2.6 9.8l8.2-4.9z"/>
+        <path fill="#EA4335" d="M24 9.5c3.4 0 6.5 1.2 8.9 3.5l6.6-6.6C35.9 2.1 30.5 0 24 0 14.7 0 6.5 5.4 2.6 13.7l8.2 4.9C12.7 13.6 17.9 9.5 24 9.5z"/>
+      </svg>
+      Googleでログイン
+    </button>
+    <div id="authError"></div>
+    <p style="font-size:0.72rem;color:var(--text-sub);margin-top:24px;">
+      ※ 管理者として登録されたアカウントのみログインできます。
+    </p>
+  </div>
+</div>
+
+<!-- =====================================================================
+     管理アプリ本体（認証後に表示）
+===================================================================== -->
+<div id="adminApp">
+
+  <!-- ヘッダー -->
+  <header class="admin-header">
+    <div class="admin-header-left">
+      <span class="admin-logo">🗳️</span>
+      <div class="admin-title-wrap">
+        <div class="title">選挙サイト 管理画面</div>
+        <div class="subtitle">Firebase Firestore 連携</div>
+      </div>
+    </div>
+    <div class="admin-header-right">
+      <span id="userEmail"></span>
+      <button class="btn-logout" onclick="logout()">ログアウト</button>
+    </div>
+  </header>
+
+  <!-- サイドバー + メインコンテンツ -->
+  <div class="admin-layout">
+
+    <!-- サイドバー（タブナビゲーション） -->
+    <nav class="admin-sidebar">
+      <!-- フェーズ切替は最重要なので一番上に配置 -->
+      <button class="tab-btn is-active" data-tab="phase" onclick="switchTab('phase')">
+        📡 フェーズ切替
+      </button>
+      <div class="sidebar-divider"></div>
+      <button class="tab-btn" data-tab="districts" onclick="switchTab('districts')">
+        🗳️ 候補者管理
+      </button>
+      <button class="tab-btn" data-tab="news" onclick="switchTab('news')">
+        📰 ニュース管理
+      </button>
+      <button class="tab-btn" data-tab="ticker" onclick="switchTab('ticker')">
+        📢 速報ティッカー
+      </button>
+      <button class="tab-btn" data-tab="config" onclick="switchTab('config')">
+        ⚙️ サイト設定
+      </button>
+      <div class="sidebar-divider"></div>
+      <button class="tab-btn" data-tab="export" onclick="switchTab('export')">
+        📋 コード出力
+      </button>
+    </nav>
+
+    <!-- メインコンテンツ（タブの中身がここに描画される） -->
+    <main class="admin-main">
+      <div id="tabContent">
+        <!-- renderActiveTab() によって動的に描画されます -->
+      </div>
+    </main>
+
+  </div><!-- /.admin-layout -->
+</div><!-- /#adminApp -->
+
+</body>
+</html>
