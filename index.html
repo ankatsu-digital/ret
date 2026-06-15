@@ -696,14 +696,13 @@ body.phase-2 .result-badge {
 
 <script>
 /* =====================================================================
-   ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
    【編集ガイド】このスクリプト内の以下のエリアを編集してください。
      1. SITE_CONFIG    : カウントダウン・ティッカー速度などの全体設定
      2. ELECTION_DATA  : 選挙区・候補者データ
      3. NEWS_DATA      : フェーズ別ニュースデータ
      4. TICKER_ITEMS   : 速報ティッカーに流す文言
+   ※ Firestoreにデータがある場合はそちらが優先されます（上書きされます）
    この下にあるレンダリング処理（renderXxx関数）は通常編集不要です。
-   ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 ===================================================================== */
 
 /* ---------------------------------------------------------------------
@@ -1269,6 +1268,9 @@ function initCountdown() {
 
 /* ---------------------------------------------------------------------
    初期化処理
+   ※ Firestoreの購読（type="module"スクリプト）が先に走り、データが
+     届いた時点で各render関数が呼ばれます。
+     Firestoreにデータがない場合のフォールバックとしてここでも初期化します。
 --------------------------------------------------------------------- */
 document.addEventListener("DOMContentLoaded", () => {
   updatePhaseBadge();
@@ -1285,6 +1287,82 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeNewsModal();
   });
+});
+</script>
+
+<!-- =====================================================================
+     ▼▼▼ Firebase / Firestore リアルタイム購読 ▼▼▼
+     管理画面（admin.html）でデータを保存すると、このページが自動で更新されます。
+     メインスクリプトより後ろに置くことで、グローバル変数・関数が参照できます。
+     Firestoreにデータがない場合はメインスクリプトのデフォルト値がそのまま使われます。
+===================================================================== -->
+<script type="module">
+import { initializeApp }                 from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+/* ---- Firebaseプロジェクト設定 ---- */
+const _cfg = {
+  apiKey:            "AIzaSyDarChAwm9_4t4CRfPiM5dVI84MjQPe5ms",
+  authDomain:        "senkyo-29a84.firebaseapp.com",
+  projectId:         "senkyo-29a84",
+  storageBucket:     "senkyo-29a84.firebasestorage.app",
+  messagingSenderId: "734912107336",
+  appId:             "1:734912107336:web:b57350fc64038f7611997d",
+  measurementId:     "G-T8ZNQSTH0K"
+};
+const _db = getFirestore(initializeApp(_cfg));
+
+/* ---- フェーズ購読：body class を書き換えてUI一括切替 ---- */
+onSnapshot(doc(_db, "senkyo", "phase"), (snap) => {
+  if (!snap.exists()) return;
+  const phase = snap.data().value ?? "1";
+  document.body.className = document.body.className
+    .replace(/phase-\d/g, "").trim() + " phase-" + phase;
+  updatePhaseBadge();
+  renderNews();
+  initCountdown();
+});
+
+/* ---- 全体設定購読：SITE_CONFIG を上書き ---- */
+onSnapshot(doc(_db, "senkyo", "config"), (snap) => {
+  if (!snap.exists()) return;
+  const data = snap.data();
+  if (data.countdown)              Object.assign(SITE_CONFIG.countdown, data.countdown);
+  if (data.tickerSpeedSec != null) SITE_CONFIG.tickerSpeedSec = data.tickerSpeedSec;
+  initTicker();
+  initCountdown();
+});
+
+/* ---- 速報ティッカー購読 ---- */
+onSnapshot(doc(_db, "senkyo", "ticker"), (snap) => {
+  if (!snap.exists()) return;
+  const items = snap.data().items;
+  if (Array.isArray(items)) {
+    TICKER_ITEMS.length = 0;
+    items.forEach(i => TICKER_ITEMS.push(i));
+    initTicker();
+  }
+});
+
+/* ---- 選挙区・候補者購読 ---- */
+onSnapshot(doc(_db, "senkyo", "districts"), (snap) => {
+  if (!snap.exists()) return;
+  const data = snap.data().data;
+  if (Array.isArray(data)) {
+    ELECTION_DATA.length = 0;
+    data.forEach(d => ELECTION_DATA.push(d));
+    renderDistricts();
+  }
+});
+
+/* ---- ニュース購読 ---- */
+onSnapshot(doc(_db, "senkyo", "news"), (snap) => {
+  if (!snap.exists()) return;
+  const data = snap.data();
+  if (data.phase1) NEWS_DATA.phase1 = data.phase1;
+  if (data.phase2) NEWS_DATA.phase2 = data.phase2;
+  if (data.phase3) NEWS_DATA.phase3 = data.phase3;
+  renderNews();
 });
 </script>
 </body>
